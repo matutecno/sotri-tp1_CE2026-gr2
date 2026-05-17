@@ -1,2 +1,15 @@
-# sotri-tp1_CE2026-gr2
-# CESE - Sistemas Operativos de Tiempo Real - Trabajo Práctico N°: 1 – Tareas de FreeRTOS
+# CESE - Sistemas Operativos de Tiempo Real
+## Trabajo Práctico N°: 1 - Tareas de FreeRTOS
+### CE2026-gr2
+
+### Integrantes del grupo:
+| N° SIU | Apellidos, Nombres           |
+| :----- | :--------------------------- |
+| e2610  | Nuñez Cuji, Marcos Neptali   |
+| e2607  | Morales Gariglio, Matías     |
+| e2623  | Berrezueta Guerrero, Rodrigo Antonio |
+
+### Responsable de la entrega:
+| N° SIU | Apellidos, Nombres         | Fecha | Deadline  |
+| :----- | :------------------------- | :----: | :-------: |
+| e2610  | Nuñez Cuji, Marcos Neptali |        | Semana 04 |
