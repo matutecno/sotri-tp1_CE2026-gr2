@@ -112,4 +112,103 @@ La interacción de TIM2 con la capa de abstracción de hardware de STMicroelectr
 
 ## Análisis del código fuente — Consulta Gemini (Paso 08)
 
-<!-- Pegar aquí la respuesta de Gemini sobre: app.c, task_btn.c, task_led.c, task_led_interface.c, freertos.c -->
+El código fuente proporcionado implementa una arquitectura basada en eventos (Event-Triggered System) utilizando el sistema operativo en tiempo real FreeRTOS. Su propósito principal es gestionar la concurrencia entre dos tareas: una que monitoriza un pulsador físico (con lógica de antirrebote) y otra que controla el estado y parpadeo de un LED. El código hace uso intensivo de máquinas de estados (statecharts) y de la capa de abstracción de hardware (HAL), típica del ecosistema de microcontroladores STM32.
+
+A continuación, se detalla el funcionamiento de cada uno de los archivos:
+
+## 1. Análisis Detallado por Archivo
+
+### 1.1. `app.c` — Inicialización y Orquestación de Tareas
+Este archivo actúa como el módulo de inicialización de la capa de aplicación antes de que comience la ejecución del planificador de FreeRTOS.
+
+* **Definición de Variables Globales de Monitoreo:**
+    Se declaran contadores de 32 bits (`g_app_cnt`, `g_app_task_cnt`, `g_app_tick_cnt`, `g_task_idle_cnt`, `g_app_stack_overflow_cnt`) orientados a la auditoría del rendimiento y diagnóstico de fallos en el sistema.
+* **Función `app_init()`:**
+    1.  **Inicialización de Variables:** Resetea los contadores globales al valor inicial `0ul`.
+    2.  **Registro de Logger:** Imprime mensajes informativos en la consola de depuración indicando que la aplicación ha iniciado y el Tick actual del sistema mediante `xTaskGetTickCount()`.
+    3.  **Creación de Tareas con `xTaskCreate`:**
+        * **`Task BTN`:** Asocia la función `task_btn`. Se le asigna un tamaño de pila equivalente a `2 * configMINIMAL_STACK_SIZE` y una prioridad de `tskIDLE_PRIORITY + 1ul` (Prioridad 1). Su manejador de referencia es `h_task_btn`.
+        * **`Task LED`:** Asocia la función `task_led`. Comparte los mismos atributos de tamaño de pila y prioridad que la tarea del botón, facilitando un esquema de tiempo compartido por sustitución (*Round-Robin*) si ambas están listas. Su manejador es `h_task_led`.
+    4.  **Manejo de Errores Críticos:** Cada creación de tarea es validada mediante `configASSERT(pdPASS == ret)`. Si falla la asignación de memoria en el *heap*, la ejecución se detiene para diagnóstico.
+    5.  **Diagnóstico de Memoria:** Llama a `xPortGetFreeHeapSize()` para verificar la cantidad de memoria dinámica restante en el *Heap*.
+    6.  **Inicialización de Periféricos de Bajo Nivel:** Invoca a `app_it_init()` para configurar las interrupciones específicas de la aplicación y a `cycle_counter_init()` para habilitar el contador de ciclos de reloj (DWT), útil para métricas de tiempo de ejecución precisas.
+
+---
+
+### 1.2. `task_btn.c` — Monitoreo de Entrada y Filtro Antirrebote
+Este módulo gestiona la lectura del pulsador mecánico conectado a un pin GPIO mediante una máquina de estados orientada al tiempo.
+
+* **Estructura de Datos (`task_btn_dta`):**
+    Almacena de forma encapsulada el evento actual (`EV_BTN_UP`), el estado interno de la FSM (`ST_BTN_UP`), el contador de tiempo de referencia (`tick`), y las referencias de hardware GPIO (`B1_GPIO_Port`, `B1_Pin`).
+* **Ciclo de Ejecución Infinito (`task_btn`):**
+    La tarea corre dentro de un bucle `for(;;)` donde incrementa el contador de diagnóstico `g_task_btn_cnt` e invoca continuamente a la función `task_btn_statechart()`. Dado que esta tarea no se bloquea explícitamente (no utiliza funciones como `vTaskDelay`), confía en que el planificador realice un cambio de contexto por tiempo compartido (*time-slicing*) o que la FSM resuelva eficientemente.
+* **Máquina de Estados Finita (`task_btn_statechart`):**
+    1.  **Lectura del Hardware:** Evalúa el pin mediante `HAL_GPIO_ReadPin()`. Si coincide con `BTN_PRESSED`, actualiza el evento interno a `EV_BTN_DOWN`; de lo contrario, se define como `EV_BTN_UP`.
+    2.  **Lógica de Transición (Switch-Case):**
+        * `ST_BTN_UP` (Reposo, botón suelto): Si el evento cambia a `EV_BTN_DOWN`, guarda el tiempo actual (`xTaskGetTickCount()`) y transiciona a `ST_BTN_FALLING`.
+        * `ST_BTN_FALLING` (Validación de pulsación): Espera a que transcurra un tiempo mayor o igual a `DEL_BTN_MAX` (50 ms/ticks). Pasado este tiempo, vuelve a verificar el hardware: si sigue presionado, confirma una pulsación legítima, registra el log `"BTN PRESSED"`, envía el comando `EV_LED_BLINK` a la tarea del LED a través de la interfaz y pasa a `ST_BTN_DOWN`. Si fue un ruido o rebote corto, regresa a `ST_BTN_UP`.
+        * `ST_BTN_DOWN` (Botón retenido): Permanece en este estado hasta que el evento cambia a `EV_BTN_UP`. En ese instante, registra el tick actual y pasa a `ST_BTN_RISING`.
+        * `ST_BTN_RISING` (Validación de liberación): Aplica un retardo de filtrado de 50 ms (`DEL_BTN_MAX`). Si al concluir el tiempo el botón se mantiene suelto, confirma la liberación, registra el log `"BTN HOVER"`, envía el comando `EV_LED_OFF` al LED y regresa al estado de reposo `ST_BTN_UP`.
+
+---
+
+### 1.3. `task_led.c` — Controlador y Actuador del LED
+Este componente se encarga de modificar el estado físico del LED de la placa de desarrollo (`LD2`) respondiendo de manera reactiva a las señales lógicas enviadas por la tarea del botón.
+
+* **Estructura de Datos (`task_led_dta`):**
+    Contiene la bandera de actualización (`flag`), el evento recibido (`event`), el estado actual de la FSM (`state`), el registro de tiempo (`tick`), y la configuración física del pin GPIO (`LD2_GPIO_Port`, `LD2_Pin`).
+* **Función de Tarea (`task_led`):**
+    Apaga inicialmente el LED usando `HAL_GPIO_WritePin` y entra en su bucle infinito incrementando `g_task_led_cnt` y evaluando la FSM mediante `task_led_statechart()`.
+* **Máquina de Estados Finita (`task_led_statechart`):**
+    * `ST_LED_OFF` (Estado Apagado): Monitorea si `flag == true` y si el evento es `EV_LED_BLINK`. Al cumplirse, limpia la bandera (`flag = false`), guarda el tiempo de referencia en `tick`, cambia de estado a `ST_LED_BLINK` y enciende el pin físico del LED (`LED_ON`).
+    * `ST_LED_BLINK` (Estado de Parpadeo): 
+        * *Prioridad de Interrupción:* Primero evalúa si ha llegado un nuevo evento de apagado (`EV_LED_OFF` con `flag == true`). Si es así, consume el evento, apaga físicamente el LED (`LED_OFF`) y regresa inmediatamente a `ST_LED_OFF`.
+        * *Temporización Asíncrona:* Si no hay órdenes de apagado, evalúa el tiempo transcurrido desde el último cambio. Si la diferencia de ticks es mayor o igual a `DEL_LED_MAX` (500 ms), actualiza la variable `tick` e invierte el estado del pin físico utilizando `HAL_GPIO_TogglePin()`. Esto produce un parpadeo constante a una frecuencia de 1 Hz (500 ms encendido, 500 ms apagado) sin bloquear el hilo de ejecución.
+
+---
+
+### 1.4. `task_led_interface.c` — Interfaz de Comunicación entre Tareas (IPC)
+Este archivo implementa el patrón de diseño de desacoplamiento de software mediante una interfaz de funciones.
+
+* **Función `put_event_task_led(task_led_ev_t event)`:**
+    Permite que cualquier tarea externa (en este caso, `task_btn`) envíe un evento de forma segura a la estructura interna del LED. Modifica la variable compartida `task_led_dta.event` con el nuevo comando y establece `task_led_dta.flag = true` para indicarle a la FSM del LED que tiene una nueva instrucción pendiente por procesar.
+    
+    *Nota Arquitectural:* Aunque funcional para propósitos educativos, al no utilizar primitivas nativas de FreeRTOS (como colas de mensajes o grupos de eventos) ni secciones críticas, este mecanismo carece de protección intrínseca contra condiciones de carrera (*race conditions*), dependiendo enteramente de la naturaleza atómica de las escrituras de punteros/variables en arquitecturas ARM Cortex-M.
+
+---
+
+### 1.5. `freertos.c` — Funciones de Gancho (Hooks) y Diagnóstico del Kernel
+Este archivo define las funciones de callback globales que el núcleo de FreeRTOS invoca de manera automática cuando experimenta eventos operativos específicos.
+
+* **`vApplicationIdleHook(void)`:**
+    Es invocada repetidamente por la tarea *Idle* de FreeRTOS, la cual tiene la prioridad más baja del sistema y solo se ejecuta cuando ninguna otra tarea de la aplicación está lista para ejecutarse. En este código, incrementa el contador `g_task_idle_cnt`. En aplicaciones comerciales, este espacio es vital para ejecutar instrucciones de bajo consumo (`WFI` - *Wait For Interrupt*) para apagar módulos del microcontrolador y ahorrar energía.
+* **`vApplicationTickHook(void)`:**
+    Se ejecuta de forma síncrona dentro del contexto de la Interrupción de Servicio (ISR) del reloj del sistema (*System Tick Interrupt*), comúnmente configurado a intervalos de 1 ms. Incrementa el contador general `g_app_tick_cnt`. Debido a que corre dentro de una ISR, su código es extremadamente corto y carece de llamadas a APIs bloqueantes de FreeRTOS.
+* **`vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)`:**
+    Es una rutina de protección crítica frente a fallos de memoria de tiempo de ejecución. Si el *kernel* detecta que el puntero de pila (*Stack Pointer*) de alguna tarea ha sobrepasado los límites asignados durante su creación (mediante el análisis de patrones en la memoria), invoca esta función. El sistema suspende temporalmente las interrupciones mutuas entrando en una sección crítica (`taskENTER_CRITICAL()`) y cuelga intencionalmente la ejecución mediante un `configASSERT( 0 )`. Esto detiene el firmware, evitando comportamientos erráticos o escrituras corruptas en memoria, permitiendo al desarrollador conectar un depurador JTAG/SWD para identificar qué tarea (`pcTaskName`) falló.
+
+---
+
+## 2. Resumen de Flujo de Eventos y Señales
+
+El ciclo dinámico de interacción del sistema puede resumirse en la siguiente secuencia temporal:
+
+```
+[ Pulsador Físico ]
+        │  (Cambio eléctrico en GPIO)
+        ▼
+[ task_btn_statechart ] ──(Filtra rebotes por 50ms)──► [ Confirma Presionado ]
+                                                              │
+                                                   (Llama put_event_task_led)
+                                                              │
+                                                              ▼
+[ task_led_statechart ] ◄──(Detecta flag e inicia 1Hz)─── [ Modifica Estructura ]
+        │
+        ▼
+[ Pin Físico LD2 (LED) ]
+```
+
+1.  **Estado de Reposo:** `Task BTN` evalúa el botón en alto (`ST_BTN_UP`). `Task LED` mantiene el LED apagado (`ST_LED_OFF`). El sistema pasa la mayor parte del tiempo incrementando `g_task_idle_cnt` a través del *Idle Hook*.
+2.  **Transición de Presionado:** El usuario presiona el botón. `Task BTN` detecta el flanco de bajada, espera 50 ms, reevalúa y confirma la pulsación. Envía el evento `EV_LED_BLINK` mediante la interfaz.
+3.  **Activación del Actuador:** `Task LED` lee la bandera activa, pasa al estado `ST_LED_BLINK`, enciende el LED y comienza a conmutar el pin de salida cada 500 ms de forma autónoma.
+4.  **Transición de Liberación:** El usuario suelta el botón. `Task BTN` detecta el flanco de subida, filtra el rebote por 50 ms y envía el evento `EV_LED_OFF`. `Task LED` intercepta inmediatamente la bandera, aborta el parpadeo temporizado, apaga el LED y regresa al estado de reposo inicial.
