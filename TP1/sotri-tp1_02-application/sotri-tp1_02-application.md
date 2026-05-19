@@ -60,3 +60,41 @@ Para eliminar una tarea y removerla del planificador se utiliza la función vTas
 * **Eliminar otra tarea:** Si una tarea necesita eliminar a otra, debe pasar como argumento el manejador (TaskHandle) de la tarea objetivo, el cual se obtuvo al momento de su creación.
 
 * **Al eliminar una tarea,** FreeRTOS se encarga de liberar automáticamente la memoria RAM dinámica que se le había asignado para su funcionamiento interno y su pila de llamadas (Stack).
+
+
+## Paso 03: Modificar las prioridades relativas asignadas a task_btn y task_led, compilar/depurar/observar comportamiento, asentar lo observado en el archivo sotri-tp1_02-application.md y reestablecer las prioridades relativas asignadas originales.
+
+Al analizar el código fuente de `task_btn` y `task_led`, se observa que ambas tareas están implementadas como bucles infinitos que sondean continuamente los estados y el tiempo (`xTaskGetTickCount()`) sin hacer uso de llamadas bloqueantes de la API de FreeRTOS (como `vTaskDelay`). 
+
+Debido a esta arquitectura de "polling continuo", las tareas consumen el 100% del tiempo de CPU que el planificador les otorga, lo que hace que el sistema sea extremadamente sensible a la asignación de prioridades.
+
+## Casos de Prueba
+
+### Caso 1: Ambas tareas tienen la MISMA prioridad (Comportamiento Original)
+* **Observación:** El sistema funciona correctamente. El botón responde y el LED parpadea cuando corresponde.
+* **Justificación:** Al tener la misma prioridad y no bloquearse nunca, el planificador (*scheduler*) de FreeRTOS utiliza el algoritmo *Round-Robin* (Time Slicing). El sistema operativo interrumpe periódicamente a cada tarea (en cada *Tick*) para darle tiempo de procesamiento a la otra, permitiendo que ambas avancen simultáneamente.
+
+### Caso 2: `task_btn` tiene MAYOR prioridad que `task_led`
+* **Observación:** Se pueden detectar las pulsaciones del botón, pero el LED nunca reacciona (nunca se enciende ni parpadea).
+* **Justificación:** Inanición (*Starvation*). Como `task_btn` tiene mayor prioridad y nunca entra en estado *Blocked* (Bloqueado), el planificador de FreeRTOS le asigna el 100% del tiempo de CPU de forma ininterrumpida. `task_led` nunca pasa al estado *Running* para procesar los eventos que `task_btn` le envía.
+
+### Caso 3: `task_led` tiene MAYOR prioridad que `task_btn`
+* **Observación:** El sistema parece congelado y el botón deja de responder por completo.
+* **Justificación:** Inanición (*Starvation*). De forma inversa al Caso 2, `task_led` acapara el 100% del tiempo del microcontrolador verificando continuamente sus banderas y el tiempo transcurrido. `task_btn` nunca obtiene tiempo de procesador para leer el estado físico del pin GPIO, por lo que nunca se detectan las pulsaciones.
+
+## Conclusión final
+Para que un sistema operativo en tiempo real (RTOS) funcione correctamente con tareas de distinta prioridad, es un requisito estricto que las tareas de mayor prioridad estén controladas por eventos (utilizando colas, semáforos o retrasos bloqueantes) para que cedan la CPU a las tareas de menor prioridad cuando no tienen trabajo útil que realizar.
+
+
+## Paso 04: Crear tres instancias de task_btn para gestionar el mismo botón y que task_led elimine una de las instancias de task_btn, compilar/depurar/observar comportamiento y asentar lo observado en el archivo sotri-tp1_02-application.md.
+
+### Fase A: Comportamiento antes de la eliminación (3 Instancias Activas)
+* **Observación:** El comportamiento del botón se volvió errático y altamente inconsistente. Al presionar el botón una única vez, el LED a veces reaccionaba inmediatamente, a veces ignoraba la pulsación, o bien se imprimían logs duplicados de `"BTN PRESSED"` de forma caótica. El contador `g_task_btn_cnt` incrementaba a una velocidad aproximadamente tres veces mayor de la habitual.
+* **Justificación:** Corrupción de Datos por Falta de Reentrada. Las tres tareas comparten la misma estructura global `task_btn_dta`. Si la `Instancia 1` detecta el botón presionado y cambia el estado a `ST_BTN_FALLING` guardando su *tick* de tiempo, en el siguiente *Time Slice* la `Instancia 2` o `Instancia 3` lee el estado modificado, corrompe el valor de `task_btn_dta.tick` con su propio tiempo actual o altera el estado interno de la máquina. Hay una condición de carrera (*Race Condition*) destructiva sobre las variables de estado y el contador global.
+
+### Fase B: Comportamiento tras la eliminación por `task_led` (2 Instancias Activas)
+* **Observación:** Al presionar el botón por primera vez, el log del sistema confirma la acción: `task_led - ELIMINANDO BTN_Inst 1`. Tras este punto, el sistema continúa funcionando de forma anómala, pero el contador `g_task_btn_cnt` reduce su velocidad de incremento (ahora avanza al doble de la velocidad normal en lugar del triple). Las pulsaciones siguen mostrando inconsistencias y rebotes de software erráticos.
+* **Justificación:** Al invocar `vTaskDelete(xTaskBtnHandle1)`, FreeRTOS elimina correctamente a `BTN_Inst 1` de la lista de tareas listas (*Ready List*) y libera su Stack asignado. Sin embargo, dado que `BTN_Inst 2` y `BTN_Inst 3` siguen existiendo y continúan compartiendo la estructura global `task_btn_dta`, el conflicto de concurrencia y la corrupción de datos persisten entre las dos instancias supervivientes.
+
+### Conclusión final
+Para instanciar múltiples veces una misma función de tarea en FreeRTOS de forma segura, el código debe ser estrictamente **reentrante**. No debe utilizar variables globales compartidas de forma directa. En su lugar, cada instancia debe recibir un puntero a su propia estructura de datos privada encapsulada a través del parámetro de creación `void *parameters`.
