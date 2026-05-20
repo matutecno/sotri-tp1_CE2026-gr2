@@ -66,6 +66,7 @@ void task_led_statechart(void);
 
 /********************** external data declaration ****************************/
 uint32_t g_task_led_cnt;
+extern TaskHandle_t h_task_btn_1;
 
 /********************** external functions definition ************************/
 /* Task LED thread */
@@ -101,6 +102,13 @@ void task_led_statechart(void)
 			{
 				/* Print out: Task execution */
 				LOGGER_INFO(" %s - LED BLINK", pcTaskGetName(NULL));
+
+				/* Lógica del Paso 04: Eliminar la primera instancia de task_btn */
+				if (NULL != h_task_btn_1) {
+					LOGGER_INFO(" task_led - ELIMINANDO h_task_btn_1");
+					vTaskDelete(h_task_btn_1);
+					h_task_btn_1 = NULL; // Evitar llamadas a punteros nulos
+				}
 
 				task_led_dta.flag = false;
 				task_led_dta.tick = xTaskGetTickCount();
