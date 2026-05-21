@@ -60,13 +60,12 @@ task_led_dta_t task_led_dta = {
 };
 
 /********************** internal functions declaration ***********************/
-void task_led_statechart(void);
+void task_led_statechart(task_led_dta_t *p_task_led_dta);
 
 /********************** internal data definition *****************************/
 
 /********************** external data declaration ****************************/
 uint32_t g_task_led_cnt;
-extern TaskHandle_t h_task_btn_1;
 
 /********************** external functions definition ************************/
 /* Task LED thread */
@@ -75,11 +74,18 @@ void task_led(void *parameters)
 	/*  Declare & Initialize Task Function variables */
 	g_task_led_cnt = G_TASK_LED_CNT_INI;
 
+	task_led_dta_t *p_task_led_dta = (task_led_dta_t *)parameters;
+
 	/* Print out: Task Initialized */
 	LOGGER_INFO(" ");
 	LOGGER_INFO("%s is running - Tick [mS] = %3d", pcTaskGetName(NULL), (int)xTaskGetTickCount());
 
-	HAL_GPIO_WritePin(task_led_dta.gpio_port, task_led_dta.pin, LED_OFF);
+	HAL_GPIO_WritePin(p_task_led_dta->gpio_port, p_task_led_dta->pin, LED_OFF);
+
+	/* 3. PASO 04: Recuperar la prioridad relativa asignada original */
+	/* Asumiendo que la prioridad normal del sistema para estas tareas es tskIDLE_PRIORITY + 1ul */
+	vTaskPrioritySet(NULL, (tskIDLE_PRIORITY + 1ul));
+	LOGGER_INFO("%s Priority lowered to normal level", pcTaskGetName(NULL));
 
 	/* As per most tasks, this task is implemented in an infinite loop. */
 	for (;;)
@@ -88,53 +94,46 @@ void task_led(void *parameters)
 		g_task_led_cnt++;
 
 		/* Run Task Statechart */
-    	task_led_statechart();
+    	task_led_statechart(p_task_led_dta);
 	}
 }
 
-void task_led_statechart(void)
+void task_led_statechart(task_led_dta_t *p_task_led_dta)
 {
-	switch (task_led_dta.state)
+	switch (p_task_led_dta->state)
 	{
 		case ST_LED_OFF:
 
-			if ((true == task_led_dta.flag) && (EV_LED_BLINK == task_led_dta.event))
+			if ((true == p_task_led_dta->flag) && (EV_LED_BLINK == p_task_led_dta->event))
 			{
 				/* Print out: Task execution */
 				LOGGER_INFO(" %s - LED BLINK", pcTaskGetName(NULL));
 
-				/* Lógica del Paso 04: Eliminar la primera instancia de task_btn */
-				if (NULL != h_task_btn_1) {
-					LOGGER_INFO(" task_led - ELIMINANDO h_task_btn_1");
-					vTaskDelete(h_task_btn_1);
-					h_task_btn_1 = NULL; // Evitar llamadas a punteros nulos
-				}
-
-				task_led_dta.flag = false;
-				task_led_dta.tick = xTaskGetTickCount();
-				task_led_dta.state = ST_LED_BLINK;
-				HAL_GPIO_WritePin(task_led_dta.gpio_port, task_led_dta.pin, LED_ON);
+				p_task_led_dta->flag = false;
+				p_task_led_dta->tick = xTaskGetTickCount();
+				p_task_led_dta->state = ST_LED_BLINK;
+				HAL_GPIO_WritePin(p_task_led_dta->gpio_port, p_task_led_dta->pin, LED_ON);
 			}
 
 			break;
 
 		case ST_LED_BLINK:
 
-			if ((true == task_led_dta.flag) && (EV_LED_OFF == task_led_dta.event))
+			if ((true == p_task_led_dta->flag) && (EV_LED_OFF == p_task_led_dta->event))
 			{
 				/* Print out: Task execution */
 				LOGGER_INFO(" %s - LED OFF", pcTaskGetName(NULL));
 
-				task_led_dta.flag = false;
-				task_led_dta.state = ST_LED_OFF;
-				HAL_GPIO_WritePin(task_led_dta.gpio_port, task_led_dta.pin, LED_OFF);
+				p_task_led_dta->flag = false;
+				p_task_led_dta->state = ST_LED_OFF;
+				HAL_GPIO_WritePin(p_task_led_dta->gpio_port, p_task_led_dta->pin, LED_OFF);
 			}
 			else
 			{
-				if (DEL_LED_MAX <= (xTaskGetTickCount() - task_led_dta.tick))
+				if (DEL_LED_MAX <= (xTaskGetTickCount() - p_task_led_dta->tick))
 				{
-					task_led_dta.tick = xTaskGetTickCount();
-					HAL_GPIO_TogglePin(task_led_dta.gpio_port, task_led_dta.pin);
+					p_task_led_dta->tick = xTaskGetTickCount();
+					HAL_GPIO_TogglePin(p_task_led_dta->gpio_port, p_task_led_dta->pin);
 				}
 			}
 
@@ -142,11 +141,11 @@ void task_led_statechart(void)
 
 		default:
 
-			task_led_dta.flag = false;
-			task_led_dta.event = EV_LED_OFF;
-			task_led_dta.state = ST_LED_OFF;
-			task_led_dta.tick  = xTaskGetTickCount();
-			HAL_GPIO_WritePin(task_led_dta.gpio_port, task_led_dta.pin, LED_OFF);
+			p_task_led_dta->flag = false;
+			p_task_led_dta->event = EV_LED_OFF;
+			p_task_led_dta->state = ST_LED_OFF;
+			p_task_led_dta->tick  = xTaskGetTickCount();
+			HAL_GPIO_WritePin(p_task_led_dta->gpio_port, p_task_led_dta->pin, LED_OFF);
 
 			break;
 	}
