@@ -83,6 +83,10 @@ void task_btn(void *parameters)
 	LOGGER_INFO(" ");
 	LOGGER_INFO("%s is running - Tick [mS] = %3d", pcTaskGetName(NULL), (int)xTaskGetTickCount());
 
+	/* Set periodic execution every DEL_BTN_MED milliseconds. */
+	TickType_t xLastWakeTime = xTaskGetTickCount();
+	const TickType_t xPeriodicity = pdMS_TO_TICKS(DEL_BTN_MED);
+
 	/* As per most tasks, this task is implemented in an infinite loop. */
 	for (;;)
 	{
@@ -90,7 +94,10 @@ void task_btn(void *parameters)
 		g_task_btn_cnt++;
 		
 		/* Run Task Statechart */
-    	task_btn_statechart();
+		task_btn_statechart();
+
+		/* Block task until the next periodic activation. */
+		vTaskDelayUntil(&xLastWakeTime, xPeriodicity);
 	}
 }
 

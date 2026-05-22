@@ -81,6 +81,10 @@ void task_led(void *parameters)
 
 	HAL_GPIO_WritePin(task_led_dta.gpio_port, task_led_dta.pin, LED_OFF);
 
+	/* Set periodic execution every DEL_LED_MED milliseconds. */
+	TickType_t xLastWakeTime = xTaskGetTickCount();
+	const TickType_t xPeriodicity = pdMS_TO_TICKS(DEL_LED_MED);
+
 	/* As per most tasks, this task is implemented in an infinite loop. */
 	for (;;)
 	{
@@ -88,7 +92,10 @@ void task_led(void *parameters)
 		g_task_led_cnt++;
 
 		/* Run Task Statechart */
-    	task_led_statechart();
+		task_led_statechart();
+
+		/* Block task until the next periodic activation. */
+		vTaskDelayUntil(&xLastWakeTime, xPeriodicity);
 	}
 }
 
